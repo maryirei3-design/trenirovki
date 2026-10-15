@@ -235,6 +235,9 @@ async function del(coll, id){ S[coll] = S[coll].filter(x=>x.id!==id); ls.set(LKE
    On open, a newer data.json (e.g. a plan Claude updated) is pulled in.
    Offline: the change waits (sync.pending) and goes out when the phone is back online. */
 const REPO = "maryirei3-design/trenirovki-data", FILE = "data.json";
+// GitHub pre-fills this form: name, owner, no expiry, Contents read/write. Only the repository has to be picked by hand.
+const TOKEN_URL = "https://github.com/settings/personal-access-tokens/new?name=" + encodeURIComponent("Зал") +
+  "&description=" + encodeURIComponent("Приложение «Зал»: только репозиторий trenirovki-data") + "&target_name=maryirei3-design&expires_in=none&contents=write";
 const sync = ls.get(LKEY+":sync", null) || {};
 const saveSync = () => ls.set(LKEY+":sync", sync);
 const LABEL = {workouts:"Тренировка", periods:"Цикл", measures:"Замер", plan:"Программа"};
@@ -442,7 +445,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "6 · 15.10";
+const APP_VERSION = "7 · 15.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -464,9 +467,12 @@ function backupCard(){
       <p class="small" style="margin:0">${syncStatus()}</p>
       <div class="row"><button class="ghost" data-act="sync-now">Отправить сейчас</button>${confirmDel==="sync"?`<button class="ghost danger" data-act="sync-off">Отключить базу</button><button class="link" data-act="del-no">Отмена</button>`:`<button class="link" data-act="del-ask" data-id="sync" style="color:var(--muted)">Отключить</button>`}</div>
       ${sync.error==="key"?`<div class="row"><input type="password" id="sync-token" placeholder="новый ключ github_pat_…" autocomplete="off" style="flex:1"><button class="ghost" data-act="sync-connect">Подключить</button></div>`:""}`
-    : `<p class="small" style="margin:0"><b>Автосохранение в базу.</b> Вставь ключ доступа к закрытому репозиторию trenirovki-data — и каждое изменение будет само уходить в базу, которую читает Claude.</p>
-      <div class="row"><input type="password" id="sync-token" placeholder="github_pat_…" autocomplete="off" style="flex:1;min-width:180px"><button class="ghost" data-act="sync-connect" style="border-color:var(--accent);color:var(--accent)">Подключить</button></div>
-      <p class="muted small" style="margin:0">Где взять ключ: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color:var(--accent)">github.com → новый ключ</a>. Пошаговая инструкция — в чате с Claude.</p>
+    : `<p class="small" style="margin:0"><b>Автосохранение в базу.</b> Два шага — и каждое изменение будет само уходить в закрытую базу, которую читает Claude.</p>
+      <ol class="small" style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px">
+        <li><a href="${TOKEN_URL}" target="_blank" rel="noopener" style="color:var(--accent);font-weight:600">Создать ключ на GitHub</a> — форма уже заполнена. Там только: <b>Repository access → Only select repositories → trenirovki-data</b>, потом <b>Generate token</b> и <b>Copy</b>.</li>
+        <li>Вернись сюда и нажми «Вставить и подключить».</li></ol>
+      <button class="primary" data-act="sync-paste" style="width:auto;padding:12px 22px">Вставить и подключить</button>
+      <details class="small"><summary class="muted" style="cursor:pointer">Вставить вручную</summary><div class="row" style="margin-top:6px"><input type="password" id="sync-token" placeholder="github_pat_…" autocomplete="off" style="flex:1;min-width:180px"><button class="ghost" data-act="sync-connect">Подключить</button></div></details>
       <p class="small" style="margin:0">Без базы записи хранятся только в этом телефоне — сохраняй копию раз в неделю.</p>`}
     <p class="muted small" style="margin:0">${b.last?`Последняя копия: ${fmtY(b.last)}.`:"Копий пока не было."}</p>
     <p class="muted small" style="margin:0">В этом приложении: ${S.workouts.length} тренировок, ${starts().length} начал цикла, ${S.measures.length} замеров. Версия ${APP_VERSION}.</p>
@@ -884,6 +890,10 @@ view.addEventListener("click", async e => {
   if (act === "export"){ b.disabled = true; await doExport(); b.disabled = false; return; }
   if (act === "copy-csv"){ copyCSV(); return; }
   if (act === "backup"){ exportData(); return; }
+  if (act === "sync-paste"){
+    let t = ""; try{ t = (await navigator.clipboard.readText()).trim(); }catch(_){ }
+    if (!/^(github_pat_|ghp_)/.test(t)){ toast(t ? "В буфере не ключ — скопируй его на GitHub" : "Не получилось прочитать буфер — вставь вручную"); return; }
+    b.disabled = true; await connectSync(t); return; }
   if (act === "sync-connect"){ const t = document.getElementById("sync-token").value.trim(); if (!/^(github_pat_|ghp_)/.test(t)){ toast("Ключ начинается с github_pat_"); return; } b.disabled = true; await connectSync(t); return; }
   if (act === "sync-now"){ sync.pending = true; saveSync(); lastLabel = "Данные"; await pushNow(); toast(sync.error ? "Не отправилось" : "Отправлено в базу"); return; }
   if (act === "sync-off"){ confirmDel = null; for (const k of Object.keys(sync)) delete sync[k]; saveSync(); toast("База отключена, записи остались в телефоне"); render(); return; }
