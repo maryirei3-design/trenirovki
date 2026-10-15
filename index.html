@@ -329,6 +329,17 @@ let range = ls.get(LKEY+":range", "week");
 let anchor = todayISO();
 let progEx = "bridge";
 let confirmDel = null;
+let editP = null;
+// "today is cycle day N" → move the nearest period start to match, or start a new cycle
+async function applyDC(dc){
+  if (!(dc >= 1 && dc <= 90)) { toast("День цикла — число от 1 до 90"); render(); return; }
+  const start = addDays(draft.date, -(dc-1));
+  if (starts().includes(start)){ render(); return; }
+  const near = S.periods.filter(p=>p.date).map(p=>({p, d:Math.abs(days(p.date, start))})).sort((a,b)=>a.d-b.d)[0];
+  if (near && near.d <= 12) await put("periods", {...near.p, date:start});
+  else await put("periods", {id:newId("p"), date:start});
+  toast(`Начало цикла: ${fmtY(start)}`); render();
+}
 const view = document.getElementById("view");
 const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>`;
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
@@ -406,6 +417,8 @@ function vTrain(){
   h += `<section class="card" id="feel">
     <div class="goal"><span class="lbl">Самочувствие до тренировки</span><span class="badge num">${filled} / ${FEEL.length}</span></div>
     <div class="bar"><i style="width:${filled/FEEL.length*100}%"></i></div>
+    <div class="scale"><div class="nm">День цикла<small>${c?`начало ${fmtY(c.start)} · ${PH[c.phase].name.toLowerCase()}`:"впиши, чтобы считались фазы"}</small></div>
+      <div class="rings" style="align-items:center"><button class="circ" data-act="dc-" aria-label="Минус день">−</button><input type="number" inputmode="numeric" id="feel-dc" value="${c?c.dc:""}" placeholder="—" aria-label="День цикла" style="width:62px;text-align:center;font-size:18px;padding:7px 2px"><button class="circ" data-act="dc+" aria-label="Плюс день">+</button></div></div>
     ${FEEL.map(f=>`<div class="scale" data-feel="${f.k}"><div class="nm">${f.name}<small>${f.hint}</small></div><div class="rings">${[1,2,3,4,5].map(v=>`<button class="ring ${F[f.k]!=null&&v<=F[f.k]?"on":""} ${F[f.k]===v?"sel":""}" data-act="feel" data-v="${v}" aria-label="${f.name} ${v}" aria-pressed="${F[f.k]===v}">${v}</button>`).join("")}</div></div>`).join("")}
     <div class="chips"><span class="lbl">Сегодня</span>${["ПМС","месячные","болит живот","мало ела","недосып"].map(fl=>`<button class="chip" data-act="flag" data-v="${fl}" aria-pressed="${(F.flags||[]).includes(fl)}">${fl}</button>`).join("")}</div>
     <input class="note" id="feel-note" placeholder="Как ты? Пара слов перед разминкой" value="${esc(F.note)}">
@@ -595,7 +608,8 @@ function vCycle(){
     <section class="card stack">
       <div class="goal"><h2>Начала циклов</h2><span class="badge num">${per.length}</span></div>
       <div class="tablewrap"><table><thead><tr><th>Начало</th><th class="r">Длина</th><th>Статус</th><th></th></tr></thead><tbody>
-      ${per.slice().reverse().map(p=>{const i=per.indexOf(p), nx=per[i+1], len=nx?days(p.date,nx.date):null; const st=len==null?["hold","идёт"]:len>35?["warn","длинный"]:len<21?["warn","короткий"]:["up","норма"]; return `<tr><td><input type="date" value="${p.date}" data-period="${p.id}" aria-label="Дата начала цикла" style="padding:5px 8px"></td><td class="r num">${len??(c&&c.start===p.date?c.dc+"…":"—")}</td><td><span class="pill ${st[0]}">${st[1]}</span></td><td class="r">${confirmDel===p.id?`<button class="ghost danger" data-act="del-p" data-id="${p.id}">Удалить</button>`:`<button class="link" data-act="del-ask" data-id="${p.id}" style="color:var(--muted)" aria-label="Удалить">×</button>`}</td></tr>`}).join("") || `<tr><td colspan="4" class="muted">Дат пока нет</td></tr>`}
+      ${per.slice().reverse().map(p=>{const i=per.indexOf(p), nx=per[i+1], len=nx?days(p.date,nx.date):null; const st=len==null?["hold","идёт"]:len>35?["warn","длинный"]:len<21?["warn","короткий"]:["up","норма"]; if (editP===p.id) return `<tr><td colspan="4"><div class="row"><input type="date" id="pe-date" value="${p.date}" aria-label="Дата начала цикла"><button class="ghost" data-act="pe-save" data-id="${p.id}" style="border-color:var(--accent);color:var(--accent)">Сохранить</button><button class="link" data-act="pe-cancel" style="color:var(--muted)">Отмена</button></div></td></tr>`;
+        return `<tr><td class="num">${fmtY(p.date)}</td><td class="r num">${len??(c&&c.start===p.date?c.dc+"…":"—")}</td><td><span class="pill ${st[0]}">${st[1]}</span></td><td class="r" style="white-space:nowrap">${confirmDel===p.id?`<button class="ghost danger" data-act="del-p" data-id="${p.id}">Удалить</button>`:`<button class="link" data-act="pe-edit" data-id="${p.id}">Изменить</button> <button class="link" data-act="del-ask" data-id="${p.id}" style="color:var(--muted);padding-inline:6px" aria-label="Удалить">×</button>`}</td></tr>`}).join("") || `<tr><td colspan="4" class="muted">Дат пока нет</td></tr>`}
       </tbody></table></div>
       <div class="row"><input type="date" id="p-date" value="${todayISO()}" aria-label="Дата начала месячных"><button class="ghost" data-act="add-period">Добавить начало</button></div>
       <p class="muted small" style="margin:0">Дату можно поправить прямо в таблице. Даты переносишь из Flo.</p>
@@ -710,7 +724,7 @@ view.addEventListener("change", async e => {
   const el = e.target;
   if (el.id === "d-date" && el.value){ draft.date = el.value; saveDraft(); render(); }
   if (el.id === "prog-ex"){ progEx = el.value; render(); }
-  if (el.dataset.period && el.value){ const p = S.periods.find(x=>x.id===el.dataset.period); if (p && p.date !== el.value){ await put("periods", {...p, date:el.value}); toast("Дата цикла обновлена"); } }
+  if (el.id === "feel-dc" && el.value !== ""){ el.blur(); await applyDC(Math.round(+el.value)); }
 });
 view.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
@@ -745,6 +759,11 @@ view.addEventListener("click", async e => {
   if (act === "del-no"){ confirmDel = null; render(); return; }
   if (act === "del-w"){ confirmDel = null; await del("workouts", b.dataset.id); toast("Тренировка удалена"); return; }
   if (act === "del-p"){ confirmDel = null; await del("periods", b.dataset.id); return; }
+  if (act === "dc-" || act === "dc+"){ const c = cycleOn(draft.date); if (!c){ toast("Впиши день цикла числом"); return; } await applyDC(c.dc + (act==="dc+"?1:-1)); return; }
+  if (act === "pe-edit"){ editP = b.dataset.id; confirmDel = null; render(); return; }
+  if (act === "pe-cancel"){ editP = null; render(); return; }
+  if (act === "pe-save"){ const v = document.getElementById("pe-date").value, p = S.periods.find(x=>x.id===b.dataset.id);
+    if (v && p){ if (v !== p.date && starts().includes(v)){ toast("Такая дата уже есть"); return; } editP = null; await put("periods", {...p, date:v}); toast("Дата цикла обновлена"); render(); } return; }
   if (act === "del-m"){ confirmDel = null; await del("measures", b.dataset.id); return; }
   if (act === "add-period"){ const v = document.getElementById("p-date").value; if (v && !starts().includes(v)){ await put("periods", {id:newId("p"), date:v}); toast("Начало цикла добавлено"); } return; }
   if (act === "add-measure"){
