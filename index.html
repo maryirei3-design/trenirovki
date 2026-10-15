@@ -148,6 +148,10 @@ td.r,th.r{text-align:right}
 .jitem:last-child{border-bottom:0}
 .banner{background:var(--warn-soft);color:var(--warn);border-radius:16px;padding:10px 14px;font-size:13px}
 .confirm{background:var(--bad-soft);border-radius:16px;padding:10px 12px;font-size:13px}
+.ringbox{position:relative;width:100%;max-width:240px;margin:0 auto}
+.ringbox svg{display:block;width:100%;height:auto}
+.ringc{position:absolute;inset:22%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;line-height:1.2;gap:2px}
+.ringc b{font-size:46px;font-weight:400;letter-spacing:-.02em;line-height:1}
 .legend{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:10px}
 .legend div{font-size:13px}
 .legend b{font-weight:500}
@@ -266,10 +270,11 @@ const PH = {m:{name:"Менструация",c:"var(--ph-m)"}, f:{name:"Фолл
 function cycleOn(iso){
   const s = starts(); const p = s.filter(d => d <= iso).pop(); if (!p) return null;
   const next = s.find(d => d > p);
-  const L = next ? days(p, next) : typicalLen();
-  const dc = days(p, iso) + 1;
+  const dc = days(p, iso) + 1, usual = typicalLen();
+  // an ongoing cycle that already ran past the usual length is at least dc days long
+  const L = next ? days(p, next) : Math.max(usual, dc);
   const ph = phasesFor(L).find(x => dc >= x.a && dc <= x.b) || {k:"l"};
-  return {start:p, dc, L, known:!!next, phase:ph.k, over: dc > L ? dc - L : 0};
+  return {start:p, dc, L, usual, known:!!next, phase:ph.k, over: !next && dc > usual ? dc - usual : 0};
 }
 const phaseTag = c => c ? `<span class="ph" style="--c:${PH[c.phase].c}">ДЦ ${c.dc} · ${PH[c.phase].name}</span>` : "";
 
@@ -584,13 +589,11 @@ function ringSVG(c){
   const arc = (a,b,col) => { const len = (b-a+1)/L*C - 3; const off = -((a-1)/L*C); return `<circle cx="120" cy="120" r="${R}" fill="none" stroke="${col}" stroke-width="16" stroke-dasharray="${Math.max(0,len)} ${C}" stroke-dashoffset="${off}" stroke-linecap="round" transform="rotate(-90 120 120)" opacity=".9"/>`; };
   let marker = "";
   if (c){ const ang = (Math.min(c.dc, L) - .5)/L*2*Math.PI - Math.PI/2; marker = `<circle cx="${120+R*Math.cos(ang)}" cy="${120+R*Math.sin(ang)}" r="12" fill="var(--card)" stroke="var(--ink)" stroke-width="3"/>`; }
-  return `<svg viewBox="0 0 240 240" class="chart" style="max-width:260px;margin:0 auto" role="img" aria-label="Кольцо цикла">
+  // centre text is HTML over the ring, so it stays centred and wraps on any phone width
+  return `<div class="ringbox"><svg viewBox="0 0 240 240" width="240" height="240" role="img" aria-label="Кольцо цикла">
     <circle cx="120" cy="120" r="${R}" fill="none" stroke="var(--line)" stroke-width="16"/>
     ${phs.map(p=>arc(p.a,p.b,p.c)).join("")}${marker}
-    <text x="120" y="104" text-anchor="middle" font-size="14" fill="var(--muted)">день цикла</text>
-    <text x="120" y="146" text-anchor="middle" font-size="46" fill="var(--ink)" font-family="Onest, sans-serif">${c?c.dc:"—"}</text>
-    <text x="120" y="170" text-anchor="middle" font-size="13" fill="var(--muted)">${c?(c.over?`на ${c.over} дн. дольше обычного`:`из ~${L}`):"нет дат"}</text>
-  </svg>`;
+  </svg><div class="ringc"><span class="muted small">день цикла</span><b>${c?c.dc:"—"}</b>${c?(c.over?`<span class="small" style="color:var(--warn)">+${c.over} к обычной длине</span>`:`<span class="muted small">обычно ~${c.usual} дн.</span>`):`<span class="muted small">нет дат</span>`}</div></div>`;
 }
 function vCycle(){
   const c = cycleOn(todayISO()), L = c ? c.L : typicalLen();
@@ -599,11 +602,11 @@ function vCycle(){
   const delta = (v,b) => n(v)!=null && n(b)!=null ? (v-b>0?"+":"")+(+(v-b).toFixed(1)) : "";
   return `<h1 class="title">Цикл</h1><div class="stack">${banner()}
     <section class="card">
-      <div class="goal"><span class="lbl">${c?PH[c.phase].name:"Добавь дату начала"}</span><span class="badge num">~${L} дн.</span></div>
+      <div class="goal"><span class="lbl">${c?PH[c.phase].name:"Добавь дату начала"}</span><span class="badge num">${c?`день ${c.dc}`:"—"}</span></div>
       <div class="bar"><i style="width:${c?Math.min(100,c.dc/L*100):0}%"></i></div>
       ${ringSVG(c)}
       <div class="legend">${phasesFor(L).map(p=>`<div><span class="ph" style="--c:${p.c}"><b>${p.name}</b></span><div class="muted small" style="margin-left:14px">ДЦ ${p.a}–${p.b}</div></div>`).join("")}</div>
-      <p class="muted small" style="margin:10px 0 0">Длина берётся из последних известных циклов, пока их нет — 42 дня. Когда внесёшь следующее начало, фазы прошлых тренировок пересчитаются сами.</p>
+      <p class="muted small" style="margin:10px 0 0">Обычная длина берётся из последних известных циклов, пока их нет — 42 дня. Если цикл затянулся, кольцо растягивается до сегодняшнего дня. Когда внесёшь следующее начало, фазы прошлых тренировок пересчитаются сами.</p>
     </section>
     <section class="card stack">
       <div class="goal"><h2>Начала циклов</h2><span class="badge num">${per.length}</span></div>

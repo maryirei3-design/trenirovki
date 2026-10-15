@@ -1,5 +1,5 @@
 // Офлайн-режим: страница берётся из сети, а без интернета — из кэша.
-const CACHE = 'zal-v2';
+const CACHE = 'zal-v3';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
