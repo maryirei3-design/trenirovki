@@ -350,6 +350,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
+const APP_VERSION = "4 · 15.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -368,6 +369,7 @@ function backupCard(){
     <div class="goal"><h2>Мои данные</h2><span class="badge">в телефоне</span></div>
     <p class="small" style="margin:0">Записи хранятся только в этом телефоне. Раз в неделю сохраняй копию в Google Диск → Claude/Fitness/Данные трекера: это и запасная копия, и способ показать мне журнал для разбора.</p>
     <p class="muted small" style="margin:0">${b.last?`Последняя копия: ${fmtY(b.last)}.`:"Копий пока не было."}</p>
+    <p class="muted small" style="margin:0">В этом приложении: ${S.workouts.length} тренировок, ${starts().length} начал цикла, ${S.measures.length} замеров. Версия ${APP_VERSION}.</p>
     <div class="row"><button class="primary" data-act="backup" style="width:auto;padding:12px 22px">Сохранить копию</button>
       <label class="ghost" for="import-file" style="cursor:pointer">Загрузить из файла</label><input type="file" id="import-file" accept=".json,application/json" hidden></div>
   </section>`;
@@ -785,7 +787,18 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) rend
 
 rebuildEX();
 render();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(()=>{});
+// Updates: check on every open/return; a new service worker takes over and the page reloads once.
+// The draft is already in localStorage, so a reload loses nothing.
+if ("serviceWorker" in navigator){
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloaded){ reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register("./sw.js", {updateViaCache:"none"}).then(reg => {
+    const check = () => reg.update().catch(()=>{});
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) check(); });
+    window.addEventListener("pageshow", check);
+  }).catch(()=>{});
+}
 </script>
 </body>
 </html>
