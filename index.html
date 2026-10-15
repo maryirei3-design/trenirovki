@@ -226,9 +226,97 @@ const newId = p => p + Date.now().toString(36) + Math.random().toString(36).slic
 async function put(coll, obj){
   const arr = S[coll]; const i = arr.findIndex(x=>x.id===obj.id); if (i>=0) arr[i]=obj; else arr.push(obj);
   if (!ls.set(LKEY+":"+coll, arr)){ toast("Не сохранилось: память браузера заполнена"); throw new Error("quota"); }
-  renderSoon();
+  markDirty(coll); renderSoon();
 }
-async function del(coll, id){ S[coll] = S[coll].filter(x=>x.id!==id); ls.set(LKEY+":"+coll, S[coll]); renderSoon(); }
+async function del(coll, id){ S[coll] = S[coll].filter(x=>x.id!==id); ls.set(LKEY+":"+coll, S[coll]); markDirty(coll); renderSoon(); }
+
+/* ---------- sync: private GitHub repo trenirovki-data, file data.json ----------
+   Every change marks the store dirty and pushes the whole store a moment later.
+   On open, a newer data.json (e.g. a plan Claude updated) is pulled in.
+   Offline: the change waits (sync.pending) and goes out when the phone is back online. */
+const REPO = "maryirei3-design/trenirovki-data", FILE = "data.json";
+const sync = ls.get(LKEY+":sync", null) || {};
+const saveSync = () => ls.set(LKEY+":sync", sync);
+const LABEL = {workouts:"Тренировка", periods:"Цикл", measures:"Замер", plan:"Программа"};
+let syncT = null, syncBusy = false, lastLabel = "Данные";
+function markDirty(coll){
+  if (!sync.token) return;
+  lastLabel = LABEL[coll] || "Данные"; sync.pending = true; saveSync();
+  clearTimeout(syncT); syncT = setTimeout(pushNow, 1200);
+}
+const b64e = str => { const bytes = new TextEncoder().encode(str); let bin = ""; for (let i=0;i<bytes.length;i+=0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); return btoa(bin); };
+const b64d = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g,"")), c=>c.charCodeAt(0)));
+function httpErr(status){ const e = new Error("http "+status); e.status = status; return e; }
+async function ghFile(method, body){
+  const r = await fetch(`https://api.github.com/repos/${REPO}/contents/${FILE}`, {method, cache:"no-store",
+    headers:{Authorization:`Bearer ${sync.token}`, Accept:"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28", ...(body?{"Content-Type":"application/json"}:{})},
+    body: body ? JSON.stringify(body) : undefined});
+  if (method === "GET" && r.status === 404) return {sha:null, data:null};
+  if (!r.ok) throw httpErr(r.status);
+  const j = await r.json();
+  return method === "GET" ? {sha:j.sha, data: JSON.parse(b64d(j.content))} : {sha:j.content.sha};
+}
+const errKind = e => (e.status===401||e.status===403||e.status===404) ? "key" : "net";
+const untouched = d => d && !d.id && d.entries.every(e=>e.reps.every(r=>r==="")) && FEEL.every(f=>d.feel[f.k]==null);
+function adopt(store){
+  for (const k of DATA_KEYS) if (store[k] !== undefined){ S[k] = store[k]; ls.set(LKEY+":"+k, S[k]); }
+  rebuildEX(); if (untouched(draft)){ draft = null; ls.set(LKEY+":draft", null); }
+}
+const newerPlan = (a, b) => a && (!b || (a.updated||"") > (b.updated||""));
+async function pushNow(){
+  clearTimeout(syncT);
+  if (!sync.token || syncBusy) return;
+  if (!navigator.onLine){ renderSoon(); return; }
+  syncBusy = true;
+  try{
+    const remote = await ghFile("GET");
+    if (newerPlan(remote.data?.store?.plan, S.plan)){ S.plan = remote.data.store.plan; ls.set(LKEY+":plan", S.plan); rebuildEX(); }
+    const body = {message:`${lastLabel} · ${new Date().toLocaleString("ru-RU")}`, content: b64e(JSON.stringify(buildData(), null, 1))};
+    if (remote.sha) body.sha = remote.sha;
+    const res = await ghFile("PUT", body);
+    Object.assign(sync, {sha:res.sha, pending:false, last:new Date().toISOString(), error:""}); saveSync();
+  }catch(e){ sync.error = errKind(e); saveSync(); }
+  finally{ syncBusy = false; renderSoon(); }
+}
+async function pullNow(){
+  if (!sync.token || syncBusy || !navigator.onLine) return;
+  if (sync.pending) return pushNow();
+  syncBusy = true; let push = false;
+  try{
+    const remote = await ghFile("GET");
+    if (!remote.sha) push = true;
+    else if (remote.sha !== sync.sha && remote.data?.store){ adopt(remote.data.store); Object.assign(sync, {sha:remote.sha, last:new Date().toISOString(), error:""}); saveSync(); toast("Данные обновлены из базы"); }
+    else if (sync.error){ sync.error = ""; saveSync(); }
+  }catch(e){ sync.error = errKind(e); saveSync(); }
+  finally{ syncBusy = false; renderSoon(); }
+  if (push){ sync.pending = true; saveSync(); pushNow(); }
+}
+// first connection: join phone and base by record id (phone wins on the same id), newest plan wins
+async function connectSync(token){
+  sync.token = token.trim(); sync.sha = null; sync.error = ""; saveSync();
+  syncBusy = true;
+  try{
+    const remote = await ghFile("GET");
+    const rs = remote.data?.store || {};
+    for (const k of ["workouts","periods","measures"]){
+      const byId = new Map((rs[k]||[]).map(x=>[x.id,x])); for (const x of S[k]) byId.set(x.id, x);
+      S[k] = [...byId.values()]; ls.set(LKEY+":"+k, S[k]);
+    }
+    if (newerPlan(rs.plan, S.plan)){ S.plan = rs.plan; ls.set(LKEY+":plan", S.plan); }
+    rebuildEX(); if (untouched(draft)){ draft = null; ls.set(LKEY+":draft", null); }
+    sync.pending = true; saveSync(); syncBusy = false;
+    await pushNow();
+    toast(sync.error ? "Ключ не подошёл" : "База подключена");
+  }catch(e){ syncBusy = false; sync.error = errKind(e); saveSync(); toast(sync.error==="key" ? "Ключ не подошёл" : "Нет связи с GitHub, попробуй ещё раз"); }
+  render();
+}
+function syncStatus(){
+  if (!sync.token) return "";
+  if (sync.error === "key") return `<span style="color:var(--bad)">Ключ не подходит или истёк — подключи заново.</span>`;
+  if (sync.pending) return navigator.onLine ? "Отправляю…" : "Нет интернета — отправится, когда появится сеть.";
+  if (sync.error === "net") return "Не удалось связаться с GitHub, повторю при следующем открытии.";
+  return sync.last ? `✓ Всё сохранено в базу · ${new Date(sync.last).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}` : "Подключено";
+}
 let pending = false;
 function renderSoon(){
   const a = document.activeElement;
@@ -354,7 +442,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "5 · 15.10";
+const APP_VERSION = "6 · 15.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -364,14 +452,22 @@ function backupInfo(){
 }
 function banner(){
   const {b, age} = backupInfo();
+  if (sync.token && sync.error !== "key") return "";
   if (backupLater || age < BACKUP_DAYS || !S.workouts.length) return "";
   return `<div class="banner" style="background:var(--accent);color:var(--accent-ink)"><b>Пора сохранить копию данных</b><div style="margin:2px 0 8px;opacity:.9">${b.last?`Последняя копия ${fmtY(b.last)}.`:"Копий ещё не было."} Сохрани её в папку «Данные трекера» на Google Диске — так я увижу твои тренировки.</div><div class="row"><button class="ghost" data-act="backup">Сохранить копию</button><button class="link" data-act="backup-later" style="color:var(--accent-ink)">Позже</button></div></div>`;
 }
 function backupCard(){
   const {b} = backupInfo();
   return `<section class="card stack">
-    <div class="goal"><h2>Мои данные</h2><span class="badge">в телефоне</span></div>
-    <p class="small" style="margin:0">Записи хранятся только в этом телефоне. Раз в неделю сохраняй копию в Google Диск → Claude/Fitness/Данные трекера: это и запасная копия, и способ показать мне журнал для разбора.</p>
+    <div class="goal"><h2>Мои данные</h2><span class="badge">${sync.token&&sync.error!=="key"?"база GitHub":"в телефоне"}</span></div>
+    ${sync.token ? `<p class="small" style="margin:0">Каждое изменение само сохраняется в закрытую базу на GitHub — Claude читает её напрямую.</p>
+      <p class="small" style="margin:0">${syncStatus()}</p>
+      <div class="row"><button class="ghost" data-act="sync-now">Отправить сейчас</button>${confirmDel==="sync"?`<button class="ghost danger" data-act="sync-off">Отключить базу</button><button class="link" data-act="del-no">Отмена</button>`:`<button class="link" data-act="del-ask" data-id="sync" style="color:var(--muted)">Отключить</button>`}</div>
+      ${sync.error==="key"?`<div class="row"><input type="password" id="sync-token" placeholder="новый ключ github_pat_…" autocomplete="off" style="flex:1"><button class="ghost" data-act="sync-connect">Подключить</button></div>`:""}`
+    : `<p class="small" style="margin:0"><b>Автосохранение в базу.</b> Вставь ключ доступа к закрытому репозиторию trenirovki-data — и каждое изменение будет само уходить в базу, которую читает Claude.</p>
+      <div class="row"><input type="password" id="sync-token" placeholder="github_pat_…" autocomplete="off" style="flex:1;min-width:180px"><button class="ghost" data-act="sync-connect" style="border-color:var(--accent);color:var(--accent)">Подключить</button></div>
+      <p class="muted small" style="margin:0">Где взять ключ: <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener" style="color:var(--accent)">github.com → новый ключ</a>. Пошаговая инструкция — в чате с Claude.</p>
+      <p class="small" style="margin:0">Без базы записи хранятся только в этом телефоне — сохраняй копию раз в неделю.</p>`}
     <p class="muted small" style="margin:0">${b.last?`Последняя копия: ${fmtY(b.last)}.`:"Копий пока не было."}</p>
     <p class="muted small" style="margin:0">В этом приложении: ${S.workouts.length} тренировок, ${starts().length} начал цикла, ${S.measures.length} замеров. Версия ${APP_VERSION}.</p>
     <div class="row"><button class="primary" data-act="backup" style="width:auto;padding:12px 22px">Сохранить копию</button>
@@ -384,12 +480,16 @@ function shareOrDownload(file, title){
   document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   return Promise.resolve(true);
 }
-async function exportData(){
+function buildData(){
   const rows = exportRows();
   const data = {app:"zal-tracker", format:1, exported:new Date().toISOString(),
     about:"Копия данных приложения «Зал» — трекер тренировок Майи (https://maryirei3-design.github.io/trenirovki/). Для Claude: summary — те же таблицы, что в выгрузке Excel (тренировки с самочувствием, упражнения, сводка по фазам цикла, цикл, замеры). store — сырые данные для восстановления через «Загрузить из файла»: workouts (feel — самочувствие 1–5 перед тренировкой), periods (начала циклов), measures, plan (текущая программа; чтобы обновить программу, Claude присылает файл с новым store.plan).",
     summary: rows, store:{}};
   for (const k of DATA_KEYS) data.store[k] = S[k];
+  return data;
+}
+async function exportData(){
+  const data = buildData();
   const name = `zal-${todayISO()}.json`;
   const ok = await shareOrDownload(new File([JSON.stringify(data, null, 2)], name, {type:"application/json"}), "Зал — данные");
   if (ok){ const {b} = backupInfo(); b.last = todayISO(); ls.set(LKEY+":backup", b); backupLater = false; toast("Копия сохранена"); render(); }
@@ -402,7 +502,7 @@ function importData(file){
       if (d.app !== "zal-tracker" || !d.store) throw new Error("bad");
       // a file with only a plan updates the plan and keeps the journal
       for (const k of DATA_KEYS) if (d.store[k] !== undefined){ S[k] = d.store[k]; ls.set(LKEY+":"+k, d.store[k]); }
-      rebuildEX(); draft = null; ls.set(LKEY+":draft", null);
+      rebuildEX(); draft = null; ls.set(LKEY+":draft", null); markDirty(d.store.workouts ? "workouts" : "plan");
       toast(d.store.workouts ? "Данные загружены" : "Программа обновлена"); render();
     }catch(e){ toast("Это не файл данных трекера"); }
   };
@@ -784,13 +884,18 @@ view.addEventListener("click", async e => {
   if (act === "export"){ b.disabled = true; await doExport(); b.disabled = false; return; }
   if (act === "copy-csv"){ copyCSV(); return; }
   if (act === "backup"){ exportData(); return; }
+  if (act === "sync-connect"){ const t = document.getElementById("sync-token").value.trim(); if (!/^(github_pat_|ghp_)/.test(t)){ toast("Ключ начинается с github_pat_"); return; } b.disabled = true; await connectSync(t); return; }
+  if (act === "sync-now"){ sync.pending = true; saveSync(); lastLabel = "Данные"; await pushNow(); toast(sync.error ? "Не отправилось" : "Отправлено в базу"); return; }
+  if (act === "sync-off"){ confirmDel = null; for (const k of Object.keys(sync)) delete sync[k]; saveSync(); toast("База отключена, записи остались в телефоне"); render(); return; }
   if (act === "backup-later"){ backupLater = true; render(); return; }
 });
 view.addEventListener("change", e => { if (e.target.id === "import-file"){ const f = e.target.files[0]; if (f) importData(f); e.target.value = ""; } });
-document.addEventListener("visibilitychange", () => { if (!document.hidden) renderSoon(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden){ renderSoon(); pullNow(); } });
+window.addEventListener("online", () => { if (sync.pending) pushNow(); else pullNow(); });
 
 rebuildEX();
 render();
+pullNow();
 // Updates: check on every open/return; a new service worker takes over and the page reloads once.
 // The draft is already in localStorage, so a reload loses nothing.
 if ("serviceWorker" in navigator){
