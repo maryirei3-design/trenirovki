@@ -286,6 +286,10 @@ function signal(e, ex){
   return Math.min(...reps) >= ex.max && n(e.rpe) <= 8 ? "up" : "hold";
 }
 const SIG = {up:["up","↑ добавить вес"], hold:["hold","= держать"], down:["down","⚠ снизить"]};
+// what went wrong in an exercise: "" all good, "pain", "tech"; old records only have pain:true
+const ISSUES = [["","Всё ок"],["pain","Боль"],["tech","Техника"]];
+const ISSUE_TXT = {"":"нет", pain:"боль", tech:"техника"};
+const issueOf = e => e.issue != null ? e.issue : (e.pain ? "pain" : "");
 const pill = s => s ? `<span class="pill ${SIG[s][0]}">${SIG[s][1]}</span>` : "";
 const sortedW = () => [...S.workouts].sort((a,b)=>a.date.localeCompare(b.date));
 function history(id){
@@ -350,7 +354,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "4 · 15.10";
+const APP_VERSION = "5 · 15.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -450,7 +454,7 @@ function vTrain(){
       </div>
       <div class="sets">${e.reps.map((r,j)=>`<label>подход ${j+1}<input type="number" inputmode="numeric" id="r-${i}-${j}" data-f="r" data-j="${j}" value="${r}" placeholder="${ex.max}" class="${n(r)!=null&&n(r)>=ex.max?"hit":""}"></label>`).join("")}</div>
       <div class="chips"><span class="lbl">RPE</span>${[6,7,7.5,8,8.5,9,9.5,10].map(v=>`<button class="chip" data-act="rpe" data-v="${v}" aria-pressed="${n(e.rpe)===v}">${v}</button>`).join("")}</div>
-      <div class="chips"><span class="lbl">Боль или техника посыпалась?</span><button class="chip bad" data-act="pain" aria-pressed="${!!e.pain}">${e.pain?"да":"нет"}</button></div>
+      <div class="chips" role="group" aria-label="Как прошло"><span class="lbl">Как прошло?</span>${ISSUES.map(([k,l])=>`<button class="chip ${k?"bad":""}" data-act="issue" data-v="${k}" aria-pressed="${issueOf(e)===k}">${l}</button>`).join("")}</div>
       <input class="note" id="n-${i}" data-f="note" placeholder="Ощущения (отдельно от RPE)" value="${esc(e.note)}">
     </section>`;
   });
@@ -677,7 +681,7 @@ function exportRows(){
     const c = cycleOn(w.date), F = w.feel||{}, p = perf(w,best);
     trainings.push([w.date, w.day, c?.dc??"", c?PH[c.phase].name:"", F.energy??"", F.mood??"", F.sleep??"", F.sore??"", F.stress??"", fl(w), F.note||"", Math.round(tonnage(w)), p!=null?Math.round(p):""]);
     for (const e of (w.entries||[])){ const v = e1rm(e), b = best[histKey(e.ex)], s = signal(e,EX[e.ex]);
-      exRows.push([w.date, c?.dc??"", c?PH[c.phase].name:"", w.day, EX[e.ex]?.name||e.ex, n(e.w)??"", (e.reps||[]).join("/"), e.rpe??"", e.pain?"да":"нет", v?+v.toFixed(1):"", v&&b?Math.round(v/b*100):"", s?SIG[s][1]:"", e.note||""]); }
+      exRows.push([w.date, c?.dc??"", c?PH[c.phase].name:"", w.day, EX[e.ex]?.name||e.ex, n(e.w)??"", (e.reps||[]).join("/"), e.rpe??"", ISSUE_TXT[issueOf(e)], v?+v.toFixed(1):"", v&&b?Math.round(v/b*100):"", s?SIG[s][1]:"", e.note||""]); }
   }
   const phase = [["Фаза","Тренировок","Сила, % от лучшего","Энергия ср.","Настроение ср.","Крепатура ср."]];
   for (const k of ["m","f","o","l"]){ const sel = ws.filter(w=>cycleOn(w.date)?.phase===k); const pv = sel.map(w=>perf(w,best)).filter(v=>v!=null); const f = key => { const a = sel.map(w=>w.feel?.[key]).filter(v=>v!=null); return a.length?+avg(a).toFixed(1):""; };
@@ -741,7 +745,7 @@ view.addEventListener("click", async e => {
     const en = draft.entries[+card.dataset.i], ex = EX[en.ex] || {step:2.5, max:99, sets:en.reps.length};
     if (act === "w+" || act === "w-"){ const st = ex.step || 1; en.w = Math.max(0, +((+en.w||0) + (act==="w+"?st:-st)).toFixed(2)); card.querySelector('[data-f="w"]').value = en.w; saveDraft(); return; }
     if (act === "rpe"){ en.rpe = +b.dataset.v === n(en.rpe) ? "" : +b.dataset.v; card.querySelectorAll('[data-act="rpe"]').forEach(c=>c.setAttribute("aria-pressed", +c.dataset.v===n(en.rpe))); card.querySelector("[data-pill]").innerHTML = headPill(en, ex); saveDraft(); return; }
-    if (act === "pain"){ en.pain = !en.pain; b.setAttribute("aria-pressed", en.pain); b.textContent = en.pain?"да":"нет"; card.querySelector("[data-pill]").innerHTML = headPill(en, ex); saveDraft(); return; }
+    if (act === "issue"){ en.issue = b.dataset.v; en.pain = !!en.issue; card.querySelectorAll('[data-act="issue"]').forEach(c=>c.setAttribute("aria-pressed", c.dataset.v===en.issue)); card.querySelector("[data-pill]").innerHTML = headPill(en, ex); saveDraft(); return; }
   }
   if (act === "feel"){ const k = b.closest("[data-feel]").dataset.feel, v = +b.dataset.v; draft.feel[k] = draft.feel[k] === v ? null : v; saveDraft(); render(); return; }
   if (act === "flag"){ const f = draft.feel.flags || (draft.feel.flags = []); const v = b.dataset.v; const i = f.indexOf(v); i>=0 ? f.splice(i,1) : f.push(v); b.setAttribute("aria-pressed", i<0); saveDraft(); return; }
@@ -749,7 +753,7 @@ view.addEventListener("click", async e => {
   if (act === "r-prev" || act === "r-next"){ const k = act==="r-prev"?-1:1; if (range==="week") anchor = addDays(anchor, 7*k); else { const d = new Date(anchor+"T12:00:00"); d.setDate(1); d.setMonth(d.getMonth()+k); anchor = d.toISOString().slice(0,10); } render(); return; }
   if (act === "save"){
     const D = draft;
-    const entries = D.entries.filter(en => en.reps.some(r=>r!=="")).map(en => ({ex:en.ex, w:en.w===""?0:en.w, reps:en.reps.filter(r=>r!==""), rpe:en.rpe, pain:!!en.pain, note:en.note||""}));
+    const entries = D.entries.filter(en => en.reps.some(r=>r!=="")).map(en => ({ex:en.ex, w:en.w===""?0:en.w, reps:en.reps.filter(r=>r!==""), rpe:en.rpe, pain:!!issueOf(en), issue:issueOf(en), note:en.note||""}));
     if (!entries.length){ toast("Впиши повторы хотя бы в одном упражнении"); return; }
     const P = PLAN().days, c = cycleOn(D.date);
     const w = {id: D.id || newId("w"), date:D.date, dayKey: D.custom ? (S.workouts.find(x=>x.id===D.id)?.dayKey||"") : D.day, day: D.custom ? D.dayLabel : `${P[D.day].title} ${P[D.day].sub}`, feel:D.feel, entries, dc:c?.dc??null};
