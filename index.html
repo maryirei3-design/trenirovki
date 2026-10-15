@@ -222,6 +222,13 @@ const ls = {
 const DATA_KEYS = ["workouts","periods","measures","plan"];
 const S = {workouts: ls.get(LKEY+":workouts", []), periods: ls.get(LKEY+":periods", []), measures: ls.get(LKEY+":measures", []), plan: ls.get(LKEY+":plan", null)};
 const newId = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+// one record per cycle start date (a phone entry and a base entry for the same day used to stay as two)
+function dedupePeriods(){
+  const seen = new Set(), out = S.periods.filter(p => p.date && !seen.has(p.date) && seen.add(p.date));
+  if (out.length !== S.periods.length){ S.periods = out; ls.set(LKEY+":periods", out); return true; }
+  return false;
+}
+dedupePeriods();
 
 async function put(coll, obj){
   const arr = S[coll]; const i = arr.findIndex(x=>x.id===obj.id); if (i>=0) arr[i]=obj; else arr.push(obj);
@@ -260,6 +267,7 @@ const errKind = e => (e.status===401||e.status===403||e.status===404) ? "key" : 
 const untouched = d => d && !d.id && d.entries.every(e=>e.reps.every(r=>r==="")) && FEEL.every(f=>d.feel[f.k]==null);
 function adopt(store){
   for (const k of DATA_KEYS) if (store[k] !== undefined){ S[k] = store[k]; ls.set(LKEY+":"+k, S[k]); }
+  if (dedupePeriods()) markDirty("periods");
   rebuildEX(); if (untouched(draft)){ draft = null; ls.set(LKEY+":draft", null); }
 }
 const newerPlan = (a, b) => a && (!b || (a.updated||"") > (b.updated||""));
@@ -303,7 +311,7 @@ async function connectSync(token){
       S[k] = [...byId.values()]; ls.set(LKEY+":"+k, S[k]);
     }
     if (newerPlan(rs.plan, S.plan)){ S.plan = rs.plan; ls.set(LKEY+":plan", S.plan); }
-    rebuildEX(); if (untouched(draft)){ draft = null; ls.set(LKEY+":draft", null); }
+    dedupePeriods(); rebuildEX(); if (untouched(draft)){ draft = null; ls.set(LKEY+":draft", null); }
     sync.pending = true; saveSync(); syncBusy = false;
     await pushNow();
     toast(sync.error ? "Ключ не подошёл" : "База подключена");
@@ -442,7 +450,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "8 · 15.10";
+const APP_VERSION = "9 · 15.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
