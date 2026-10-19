@@ -436,21 +436,34 @@ let progEx = "bridge";
 let confirmDel = null;
 let editP = null;
 // "today is cycle day N" → move the nearest period start to match, or start a new cycle
-async function applyDC(dc){
-  if (!(dc >= 1 && dc <= 90)) { toast("День цикла — число от 1 до 90"); render(); return; }
+let dcT = null;
+async function applyDC(dc, quiet){
+  const redraw = quiet ? renderSoon : render;
+  if (!(dc >= 1 && dc <= 90)) { toast("День цикла — число от 1 до 90"); redraw(); return; }
   const start = addDays(draft.date, -(dc-1));
-  if (starts().includes(start)){ render(); return; }
+  if (starts().includes(start)){ redraw(); return; }
   const near = S.periods.filter(p=>p.date).map(p=>({p, d:Math.abs(days(p.date, start))})).sort((a,b)=>a.d-b.d)[0];
   if (near && near.d <= 12) await put("periods", {...near.p, date:start});
   else await put("periods", {id:newId("p"), date:start});
-  toast(`Начало цикла: ${fmtY(start)}`); render();
+  toast(`✓ Начало цикла: ${fmtY(start)}`); redraw();
+}
+// the typed cycle day is applied a moment after typing stops, or right away if the app is hidden
+function flushDC(){
+  if (!dcT) return; clearTimeout(dcT); dcT = null;
+  const el = document.getElementById("feel-dc"); if (el && el.value !== "") applyDC(Math.round(+el.value), true);
+}
+// a draft from an earlier day with no sets typed moves to today (wellbeing is per day, so it starts clean),
+// so the cycle day counts from today
+function rollDraft(){
+  if (!draft || draft.id || draft.date >= todayISO() || !draft.entries.every(e=>e.reps.every(r=>r===""))) return;
+  draft.date = todayISO(); draft.feel = {energy:null,mood:null,sleep:null,sore:null,stress:null,flags:[],note:""}; saveDraft();
 }
 const view = document.getElementById("view");
 const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>`;
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "9 · 15.10";
+const APP_VERSION = "10 · 19.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -831,6 +844,7 @@ view.addEventListener("focusout", () => { setTimeout(()=>{ if (pending) renderSo
 view.addEventListener("input", e => {
   const el = e.target;
   if (el.id === "feel-note"){ draft.feel.note = el.value; saveDraft(); return; }
+  if (el.id === "feel-dc"){ clearTimeout(dcT); dcT = el.value === "" ? null : setTimeout(flushDC, 900); return; }
   const card = el.closest("[data-i]"); if (!card || !draft) return;
   const en = draft.entries[+card.dataset.i], ex = EX[en.ex] || {max:99, sets:en.reps.length};
   if (el.dataset.f === "w") en.w = el.value === "" ? "" : +el.value;
@@ -842,7 +856,7 @@ view.addEventListener("change", async e => {
   const el = e.target;
   if (el.id === "d-date" && el.value){ draft.date = el.value; saveDraft(); render(); }
   if (el.id === "prog-ex"){ progEx = el.value; render(); }
-  if (el.id === "feel-dc" && el.value !== ""){ el.blur(); await applyDC(Math.round(+el.value)); }
+  if (el.id === "feel-dc" && el.value !== ""){ clearTimeout(dcT); dcT = null; el.blur(); await applyDC(Math.round(+el.value)); }
 });
 view.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
@@ -903,10 +917,15 @@ view.addEventListener("click", async e => {
   if (act === "backup-later"){ backupLater = true; render(); return; }
 });
 view.addEventListener("change", e => { if (e.target.id === "import-file"){ const f = e.target.files[0]; if (f) importData(f); e.target.value = ""; } });
-document.addEventListener("visibilitychange", () => { if (!document.hidden){ renderSoon(); pullNow(); } });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden){ flushDC(); if (sync.pending) pushNow(); return; }
+  rollDraft(); renderSoon(); pullNow();
+});
+window.addEventListener("pagehide", () => { flushDC(); if (sync.pending) pushNow(); });
 window.addEventListener("online", () => { if (sync.pending) pushNow(); else pullNow(); });
 
 rebuildEX();
+rollDraft();
 render();
 pullNow();
 // Updates: check on every open/return; a new service worker takes over and the page reloads once.
