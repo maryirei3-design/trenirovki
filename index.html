@@ -271,19 +271,24 @@ function adopt(store){
   rebuildEX(); if (untouched(draft)){ draft = null; ls.set(LKEY+":draft", null); }
 }
 const newerPlan = (a, b) => a && (!b || (a.updated||"") > (b.updated||""));
+// a plan loaded from a file must reach the base as is, even if the base holds a "newer" one
+let keepPlanNext = ls.get(LKEY+":keepPlan", false);
 async function pushNow(){
   clearTimeout(syncT);
-  if (!sync.token || syncBusy) return;
-  if (!navigator.onLine){ renderSoon(); return; }
+  if (!sync.token) return false;
+  if (syncBusy){ syncT = setTimeout(pushNow, 800); return false; }
+  if (!navigator.onLine){ renderSoon(); return false; }
   syncBusy = true;
   try{
     const remote = await ghFile("GET");
-    if (newerPlan(remote.data?.store?.plan, S.plan)){ S.plan = remote.data.store.plan; ls.set(LKEY+":plan", S.plan); rebuildEX(); }
+    if (!keepPlanNext && newerPlan(remote.data?.store?.plan, S.plan)){ S.plan = remote.data.store.plan; ls.set(LKEY+":plan", S.plan); rebuildEX(); }
     const body = {message:`${lastLabel} · ${new Date().toLocaleString("ru-RU")}`, content: b64e(JSON.stringify(buildData(), null, 1))};
     if (remote.sha) body.sha = remote.sha;
     const res = await ghFile("PUT", body);
     Object.assign(sync, {sha:res.sha, pending:false, last:new Date().toISOString(), error:""}); saveSync();
-  }catch(e){ sync.error = errKind(e); saveSync(); }
+    keepPlanNext = false; ls.set(LKEY+":keepPlan", false);
+    return true;
+  }catch(e){ sync.error = errKind(e); saveSync(); return false; }
   finally{ syncBusy = false; renderSoon(); }
 }
 async function pullNow(){
@@ -463,7 +468,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "10 · 19.10";
+const APP_VERSION = "11 · 21.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -480,19 +485,21 @@ function banner(){
 function backupCard(){
   const {b} = backupInfo(), on = sync.token && sync.error !== "key";
   const counts = `${S.workouts.length} тренировок · ${starts().length} начал цикла · ${S.measures.length} замеров · версия ${APP_VERSION}`;
+  const fileRow = `<div class="row"><button class="ghost" data-act="backup">Сохранить копию</button>
+      <label class="ghost" for="import-file" style="cursor:pointer">Загрузить из файла</label><input type="file" id="import-file" accept=".json,application/json" hidden></div>`;
   if (on) return `<section class="card stack">
     <div class="goal"><h2>Мои данные</h2><span class="badge">база</span></div>
     <p class="small" style="margin:0">${syncStatus()}</p>
     <button class="primary" data-act="sync-now" style="width:auto;padding:12px 22px;align-self:flex-start">Сохранить в базу</button>
-    <p class="muted small" style="margin:0">${counts}</p>
+    ${fileRow}
+    <p class="muted small" style="margin:0">${b.last?`Последняя копия: ${fmtY(b.last)}. `:""}${counts}</p>
   </section>`;
   return `<section class="card stack">
     <div class="goal"><h2>Мои данные</h2><span class="badge">в телефоне</span></div>
     <p class="small" style="margin:0">${sync.error==="key" ? `<span style="color:var(--bad)">Ключ базы не подходит или истёк.</span>` : "База не подключена — записи только в этом телефоне."}</p>
     <div class="row"><button class="ghost" data-act="sync-paste" style="border-color:var(--accent);color:var(--accent)">${sync.error==="key"?"Подключить заново":"Подключить базу"}</button>
       <details class="small"><summary class="muted" style="cursor:pointer">вручную</summary><div class="row" style="margin-top:6px"><input type="password" id="sync-token" placeholder="github_pat_…" autocomplete="off" style="flex:1;min-width:160px"><button class="ghost" data-act="sync-connect">OK</button></div></details></div>
-    <div class="row"><button class="ghost" data-act="backup">Сохранить копию</button>
-      <label class="ghost" for="import-file" style="cursor:pointer">Загрузить из файла</label><input type="file" id="import-file" accept=".json,application/json" hidden></div>
+    ${fileRow}
     <p class="muted small" style="margin:0">${b.last?`Последняя копия: ${fmtY(b.last)}. `:""}${counts}</p>
   </section>`;
 }
@@ -518,15 +525,22 @@ async function exportData(){
 }
 function importData(file){
   const fr = new FileReader();
-  fr.onload = () => {
-    try{
-      const d = JSON.parse(fr.result);
-      if (d.app !== "zal-tracker" || !d.store) throw new Error("bad");
-      // a file with only a plan updates the plan and keeps the journal
-      for (const k of DATA_KEYS) if (d.store[k] !== undefined){ S[k] = d.store[k]; ls.set(LKEY+":"+k, d.store[k]); }
-      rebuildEX(); draft = null; ls.set(LKEY+":draft", null); markDirty(d.store.workouts ? "workouts" : "plan");
-      toast(d.store.workouts ? "Данные загружены" : "Программа обновлена"); render();
-    }catch(e){ toast("Это не файл данных трекера"); }
+  fr.onload = async () => {
+    let d;
+    try{ d = JSON.parse(fr.result); if (d.app !== "zal-tracker" || !d.store) throw new Error("bad"); }
+    catch(e){ toast("Это не файл данных трекера"); return; }
+    // a file with only a plan updates the plan and keeps the journal
+    for (const k of DATA_KEYS) if (d.store[k] !== undefined){ S[k] = d.store[k]; ls.set(LKEY+":"+k, d.store[k]); }
+    dedupePeriods(); rebuildEX(); draft = null; ls.set(LKEY+":draft", null);
+    const what = d.store.workouts ? "Данные загружены" : "Программа обновлена";
+    render();
+    if (!sync.token || sync.error === "key"){ toast(what); return; }
+    // send to the base right away, keeping the plan from the file
+    if (d.store.plan !== undefined){ keepPlanNext = true; ls.set(LKEY+":keepPlan", true); }
+    lastLabel = d.store.workouts ? "Данные из файла" : "Программа из файла"; sync.pending = true; saveSync();
+    const sent = await pushNow();
+    toast(d.store.workouts ? (sent ? "Данные загружены и отправлены в базу" : "Данные загружены — отправятся в базу, когда будет связь")
+                           : (sent ? "Программа обновлена и отправлена в базу" : "Программа обновлена — отправится в базу, когда будет связь"));
   };
   fr.readAsText(file);
 }
