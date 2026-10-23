@@ -129,6 +129,9 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
 .cal .d{height:40px;display:grid;place-items:center;font-size:16px;position:relative;font-variant-numeric:tabular-nums}
 .cal .d.out{color:var(--muted);opacity:.45}
 .cal .d.w span{background:var(--accent);color:var(--accent-ink);border-radius:50%;width:38px;height:38px;display:grid;place-items:center}
+.cal .d.c span{box-shadow:inset 0 0 0 2px var(--accent);color:var(--accent);border-radius:50%;width:38px;height:38px;display:grid;place-items:center}
+.cardio-item{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:2px}
+.cardio-item .wt{margin-top:8px}
 .cal .d.p::after{content:"";position:absolute;bottom:1px;width:5px;height:5px;border-radius:50%;background:var(--ph-m)}
 .cal .d.t span{box-shadow:inset 0 0 0 1.5px var(--ink);border-radius:50%;width:38px;height:38px;display:grid;place-items:center}
 
@@ -264,7 +267,7 @@ async function ghFile(method, body){
   return method === "GET" ? {sha:j.sha, data: JSON.parse(b64d(j.content))} : {sha:j.content.sha};
 }
 const errKind = e => (e.status===401||e.status===403||e.status===404) ? "key" : "net";
-const untouched = d => d && !d.id && d.entries.every(e=>e.reps.every(r=>r==="")) && FEEL.every(f=>d.feel[f.k]==null);
+const untouched = d => d && !d.id && d.entries.every(e=>e.reps.every(r=>r==="")) && cardioUntouched(d) && FEEL.every(f=>d.feel[f.k]==null);
 function adopt(store){
   for (const k of DATA_KEYS) if (store[k] !== undefined){ S[k] = store[k]; ls.set(LKEY+":"+k, S[k]); }
   if (dedupePeriods()) markDirty("periods");
@@ -418,18 +421,30 @@ const FEEL = [
   {k:"sleep", name:"Сон", hint:"1 — плохо спала, 5 — выспалась"},
   {k:"sore", name:"Крепатура", hint:"1 — нет, 5 — всё болит"},
   {k:"stress", name:"Стресс", hint:"1 — спокойно, 5 — на пределе"}];
+/* cardio: workout.cardio = [{type, min, hr, zone, note}]; a record with dayKey "cardio" has no strength part */
+const CARDIO_TYPES = [["bike","Горизонтальный велик","Гор. велик"],["stairs","Лестница","Лестница"],["tread","Дорожка","Дорожка"],["walk","Прогулка","Прогулка"],["other","Другое","Другое"]];
+const ZONES = [["easy","Легко"],["120-130","120–130"],["high","Выше"]];
+const cardioType = k => CARDIO_TYPES.find(t=>t[0]===k) || [k, k, k];
+const pulseTxt = c => n(c.hr)!=null ? `${c.hr} уд/мин` : (ZONES.find(z=>z[0]===c.zone)?.[1] || "");
+const cardioMin = w => (w.cardio||[]).reduce((sum,c)=>sum+(n(c.min)||0), 0);
+const isCardioOnly = w => w.dayKey === "cardio";
+function lastCardioType(){ for (const w of sortedW().reverse()) for (const c of (w.cardio||[]).slice().reverse()) if (c.type) return c.type; return "bike"; }
+const newCardio = () => ({type:lastCardioType(), min:"", hr:"", zone:"", note:""});
+const cardioUntouched = d => (d.cardio||[]).every(c => c.min === "" || c.min == null);
 let draft = ls.get(LKEY+":draft", null);
 const saveDraft = () => ls.set(LKEY+":draft", draft);
 function nextDay(){ const order = ["D1","D2","D3"]; const last = sortedW().filter(w=>order.includes(w.dayKey)).pop(); return last ? order[(order.indexOf(last.dayKey)+1)%3] : "D1"; }
 function newDraft(day, date){
-  draft = {id:null, day, date: date || todayISO(), feel:{energy:null,mood:null,sleep:null,sore:null,stress:null,flags:[],note:""}, entries:[]};
-  draft.entries = PLAN().days[day].ex.map(ex => ({ex:ex.id, w: suggest(ex).w, reps:Array(ex.sets).fill(""), rpe:"", pain:false, note:""}));
+  draft = {id:null, day, date: date || todayISO(), feel:{energy:null,mood:null,sleep:null,sore:null,stress:null,flags:[],note:""}, entries:[], cardio:[]};
+  if (day === "cardio") draft.cardio = [newCardio()];
+  else draft.entries = PLAN().days[day].ex.map(ex => ({ex:ex.id, w: suggest(ex).w, reps:Array(ex.sets).fill(""), rpe:"", pain:false, note:""}));
   saveDraft();
 }
 function editWorkout(w){
-  const day = w.dayKey && PLAN().days[w.dayKey] ? w.dayKey : null;
+  const day = isCardioOnly(w) ? "cardio" : (w.dayKey && PLAN().days[w.dayKey] ? w.dayKey : null);
   draft = {id:w.id, day: day || "D1", custom: !day, dayLabel:w.day, date:w.date, feel:{energy:null,mood:null,sleep:null,sore:null,stress:null,flags:[],note:"", ...(w.feel||{})},
-    entries: (w.entries||[]).map(e => { const ex = EX[e.ex]; const reps = [...(e.reps||[])]; while (ex && reps.length < ex.sets) reps.push(""); return {...e, reps}; })};
+    entries: (w.entries||[]).map(e => { const ex = EX[e.ex]; const reps = [...(e.reps||[])]; while (ex && reps.length < ex.sets) reps.push(""); return {...e, reps}; }),
+    cardio: (w.cardio||[]).map(c => ({type:c.type, min:c.min??"", hr:c.hr??"", zone:c.zone||"", note:c.note||""}))};
   saveDraft();
 }
 
@@ -460,7 +475,7 @@ function flushDC(){
 // a draft from an earlier day with no sets typed moves to today (wellbeing is per day, so it starts clean),
 // so the cycle day counts from today
 function rollDraft(){
-  if (!draft || draft.id || draft.date >= todayISO() || !draft.entries.every(e=>e.reps.every(r=>r===""))) return;
+  if (!draft || draft.id || draft.date >= todayISO() || !draft.entries.every(e=>e.reps.every(r=>r==="")) || !cardioUntouched(draft)) return;
   draft.date = todayISO(); draft.feel = {energy:null,mood:null,sleep:null,sore:null,stress:null,flags:[],note:""}; saveDraft();
 }
 const view = document.getElementById("view");
@@ -468,7 +483,7 @@ const ARR_L = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const ARR_R = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
 
 /* ---------- backups: reminder every 7 days ---------- */
-const APP_VERSION = "11 · 21.10";
+const APP_VERSION = "12 · 23.10";
 const BACKUP_DAYS = 7;
 let backupLater = false;
 function backupInfo(){
@@ -512,7 +527,7 @@ function shareOrDownload(file, title){
 function buildData(){
   const rows = exportRows();
   const data = {app:"zal-tracker", format:1, exported:new Date().toISOString(),
-    about:"Копия данных приложения «Зал» — трекер тренировок Майи (https://maryirei3-design.github.io/trenirovki/). Для Claude: summary — те же таблицы, что в выгрузке Excel (тренировки с самочувствием, упражнения, сводка по фазам цикла, цикл, замеры). store — сырые данные для восстановления через «Загрузить из файла»: workouts (feel — самочувствие 1–5 перед тренировкой), periods (начала циклов), measures, plan (текущая программа; чтобы обновить программу, Claude присылает файл с новым store.plan).",
+    about:"Копия данных приложения «Зал» — трекер тренировок Майи (https://maryirei3-design.github.io/trenirovki/). Для Claude: summary — те же таблицы, что в выгрузке Excel (тренировки с самочувствием, упражнения, сводка по фазам цикла, цикл, замеры). store — сырые данные для восстановления через «Загрузить из файла»: workouts (feel — самочувствие 1–5 перед тренировкой; cardio — кардио: type bike/stairs/tread/walk/other, min, hr или zone easy/120-130/high, note; dayKey «cardio» — запись «только кардио»), periods (начала циклов), measures, plan (текущая программа; чтобы обновить программу, Claude присылает файл с новым store.plan).",
     summary: rows, store:{}};
   for (const k of DATA_KEYS) data.store[k] = S[k];
   return data;
@@ -550,8 +565,10 @@ function vTrain(){
   if (!draft) newDraft(nextDay());
   const P = PLAN().days, D = draft, c = cycleOn(D.date), t = todayISO();
   const isToday = D.date === t;
-  let h = `<h1 class="title">${D.id ? "Правка тренировки" : "Тренировка"}</h1><div class="stack">${banner()}`;
-  if (!D.custom) h += `<div class="seg" role="group" aria-label="День плана">${Object.keys(P).map(k=>`<button data-day="${k}" aria-pressed="${k===D.day}">${P[k].title}<small>${esc(P[k].sub)}</small></button>`).join("")}</div>`;
+  if (!D.cardio) D.cardio = [];
+  const only = D.day === "cardio";
+  let h = `<h1 class="title">${D.id ? (only ? "Правка кардио" : "Правка тренировки") : (only ? "Кардио" : "Тренировка")}</h1><div class="stack">${banner()}`;
+  if (!D.custom) h += `<div class="seg" role="group" aria-label="День плана">${Object.keys(P).map(k=>`<button data-day="${k}" aria-pressed="${k===D.day}">${P[k].title}<small>${esc(P[k].sub)}</small></button>`).join("")}<button data-day="cardio" aria-pressed="${only}">Кардио<small>без силовых</small></button></div>`;
   else h += `<div class="card small muted">Тренировка по старому сплиту: ${esc(D.dayLabel)}</div>`;
   h += `<div class="navr">
       <button class="arrow" data-act="d-prev" aria-label="День назад">${ARR_L}</button>
@@ -594,10 +611,25 @@ function vTrain(){
       <input class="note" id="n-${i}" data-f="note" placeholder="Ощущения (отдельно от RPE)" value="${esc(e.note)}">
     </section>`;
   });
-  h += `<button class="primary" data-act="save">${D.id?"Сохранить изменения":"Сохранить тренировку"}</button>`;
+  h += cardioCard(D);
+  h += `<button class="primary" data-act="save">${D.id?"Сохранить изменения":(only?"Сохранить кардио":"Сохранить тренировку")}</button>`;
   if (D.id) h += `<button class="ghost" data-act="cancel-edit" style="align-self:center">Отменить правку</button>`;
   h += `<p class="muted small" style="margin:0 4px">Черновик хранится в этом браузере, пока ты не сохранишь. «↑ добавить вес» загорается, когда все подходы на верхней границе и RPE не выше 8.</p></div>`;
   return h;
+}
+function cardioCard(D){
+  const only = D.day === "cardio", list = D.cardio, total = list.reduce((sum,c)=>sum+(n(c.min)||0), 0);
+  return `<section class="card stack" id="cardio">
+    <div class="goal"><h2>Кардио</h2><span class="badge num" data-ctotal>${total ? total+" мин" : (only ? "мин" : "необязательно")}</span></div>
+    ${list.map((c,i)=>`<div class="cardio-item" data-ci="${i}">
+      <div class="row between"><span class="small muted">${list.length>1?`Запись ${i+1}`:"Что делала"}</span><button class="link" data-act="c-del" style="color:var(--muted);padding-inline:6px" aria-label="Удалить запись кардио">×</button></div>
+      <div class="chips" role="group" aria-label="Тип кардио" style="margin-top:4px">${CARDIO_TYPES.map(([k,full,short])=>`<button class="chip" data-act="c-type" data-v="${k}" aria-pressed="${c.type===k}" aria-label="${full}">${short}</button>`).join("")}</div>
+      <div class="wt"><button class="circ" data-act="c-min-" aria-label="Минус 5 минут">−</button><input type="number" inputmode="numeric" id="cm-${i}" data-cf="min" value="${c.min}" placeholder="0" aria-label="Минуты"><button class="circ" data-act="c-min+" aria-label="Плюс 5 минут">+</button><span class="muted">мин</span></div>
+      <div class="chips" role="group" aria-label="Пульс"><span class="lbl">Пульс</span>${ZONES.map(([k,l])=>`<button class="chip" data-act="c-zone" data-v="${k}" aria-pressed="${c.zone===k}">${l}</button>`).join("")}<input type="number" inputmode="numeric" id="ch-${i}" data-cf="hr" value="${c.hr??""}" placeholder="уд/мин" aria-label="Пульс, ударов в минуту" style="width:92px;padding:6px 8px"></div>
+      <input class="note" id="cn-${i}" data-cf="note" placeholder="Заметка (наклон, скорость, ощущения)" value="${esc(c.note)}">
+    </div>`).join("")}
+    <button class="ghost" data-act="c-add" style="align-self:flex-start">+ ${list.length ? "Ещё кардио" : "Добавить кардио"}</button>
+  </section>`;
 }
 function headPill(e, ex){
   const done = e.reps.filter(r=>r!=="").length;
@@ -611,13 +643,13 @@ function rangeBounds(){
   const s = sortedW(); return [s[0]?.date || todayISO(), todayISO()];
 }
 function calendar(a, b){
-  const wset = new Set(S.workouts.map(w=>w.date)), pset = new Set(starts()), t = todayISO();
+  const wset = new Set(S.workouts.filter(w=>!isCardioOnly(w)).map(w=>w.date)), cset = new Set(S.workouts.filter(isCardioOnly).map(w=>w.date)), pset = new Set(starts()), t = todayISO();
   const dows = ["П","В","С","Ч","П","С","В"];
   let cells = "";
   let start = a; const wd = (new Date(a+"T12:00:00").getDay()+6)%7; start = addDays(a, -wd);
   let end = b; const we = (new Date(b+"T12:00:00").getDay()+6)%7; end = addDays(b, 6-we);
   for (let d = start; d <= end; d = addDays(d,1)){
-    const cls = ["d", d<a||d>b?"out":"", wset.has(d)?"w":"", pset.has(d)?"p":"", d===t&&!wset.has(d)?"t":""].join(" ");
+    const cls = ["d", d<a||d>b?"out":"", wset.has(d)?"w":(cset.has(d)?"c":""), pset.has(d)?"p":"", d===t&&!wset.has(d)&&!cset.has(d)?"t":""].join(" ");
     cells += `<div class="${cls}" title="${fmtY(d)}${pset.has(d)?" · начало цикла":""}"><span>${+d.slice(8)}</span></div>`;
   }
   return `<div class="cal">${dows.map(x=>`<div class="dow">${x}</div>`).join("")}${cells}</div>`;
@@ -656,7 +688,13 @@ function vProgress(){
   const [a,b] = rangeBounds(), t = todayISO();
   const inR = sortedW().filter(w => w.date >= a && w.date <= b);
   const best = bestMap();
-  const target = range==="week" ? 3 : range==="month" ? Math.round((days(a,b)+1)/7*3) : Math.max(inR.length, Math.round((days(a,b)+1)/7*3));
+  const inS = inR.filter(w=>!isCardioOnly(w));
+  const target = range==="week" ? 3 : range==="month" ? Math.round((days(a,b)+1)/7*3) : Math.max(inS.length, Math.round((days(a,b)+1)/7*3));
+  const cSess = inR.flatMap(w=>(w.cardio||[]).filter(c=>n(c.min)>0));
+  const cMin = cSess.reduce((sum,c)=>sum+(+c.min), 0);
+  const cByType = CARDIO_TYPES.map(([k,,short])=>[short, cSess.filter(c=>c.type===k).reduce((sum,c)=>sum+(+c.min),0)]).filter(x=>x[1]>0);
+  const cMax = Math.max(1, ...cByType.map(x=>x[1]));
+  const weeks = Math.max(1, (Math.min(days(a,b), days(a,t))+1)/7);
   const label = range==="week" ? (a <= t && t <= b ? "Эта неделя" : "Неделя") : range==="month" ? MONN[+a.slice(5,7)-1] : "Всё время";
   const sub = range==="month" ? a.slice(0,4) : `${fmtLong(a)} – ${fmtLong(b)}`;
   const energies = inR.map(w=>w.feel?.energy).filter(v=>v!=null);
@@ -677,10 +715,10 @@ function vProgress(){
       <button class="arrow" data-act="r-next" aria-label="Вперёд" ${range==="all"||b>=t?"disabled":""}>${ARR_R}</button>
     </div>
     <section class="card">
-      <div class="goal"><h2>Тренировки</h2><span class="badge num">${inR.length} / ${target}</span></div>
-      <div class="bar"><i style="width:${Math.min(100,inR.length/Math.max(1,target)*100)}%"></i></div>
-      ${range==="all" ? `<p class="muted small" style="margin:0">Всего ${inR.length} тренировок с ${fmtY(a)}.</p>` : calendar(a,b)}
-      <div class="row small muted" style="margin-top:8px;gap:14px"><span class="ph" style="--c:var(--accent)">тренировка</span><span class="ph" style="--c:var(--ph-m)">начало цикла</span></div>
+      <div class="goal"><h2>Тренировки</h2><span class="badge num">${inS.length} / ${target}</span></div>
+      <div class="bar"><i style="width:${Math.min(100,inS.length/Math.max(1,target)*100)}%"></i></div>
+      ${range==="all" ? `<p class="muted small" style="margin:0">Всего ${inS.length} силовых тренировок с ${fmtY(a)}.</p>` : calendar(a,b)}
+      <div class="row small muted" style="margin-top:8px;gap:14px"><span class="ph" style="--c:var(--accent)">тренировка</span><span class="row" style="gap:6px"><i style="width:9px;height:9px;border-radius:50%;box-shadow:inset 0 0 0 2px var(--accent)"></i>только кардио</span><span class="ph" style="--c:var(--ph-m)">начало цикла</span></div>
     </section>
     <div class="grid2">
       <section class="card tile">
@@ -696,6 +734,14 @@ function vProgress(){
         <div class="big num">${Math.round(ton).toLocaleString("ru-RU")}</div>
       </section>
     </div>
+    <section class="card">
+      <div class="goal"><h2>Кардио</h2><span class="badge">мин</span></div>
+      <div class="bar"><i style="width:${Math.min(100, cMin/weeks/150*100)}%"></i></div>
+      <div class="row between" style="align-items:flex-end">
+        <div><div class="big num">${cMin}</div><div class="muted small">${cSess.length ? `${cSess.length} ${cSess.length===1?"запись":cSess.length<5?"записи":"записей"}${range!=="week"?` · ≈ ${Math.round(cMin/weeks)} мин в неделю`:""}` : "кардио за этот период нет"}</div></div>
+      </div>
+      ${cByType.length ? `<div class="phbars">${cByType.map(([l,v])=>`<div class="phbar" style="--c:var(--accent)"><div class="top"><span>${l}</span><span class="num">${v} мин</span></div><div class="track"><i style="width:${Math.max(4,v/cMax*100)}%"></i></div></div>`).join("")}</div>` : ""}
+    </section>
     <section class="card">
       <div class="goal"><h2>Сила по фазам цикла</h2><span class="badge">% от лучшего</span></div>
       <div class="bar"><i style="width:100%;background:linear-gradient(90deg,var(--ph-m),var(--ph-f),var(--ph-o),var(--ph-l))"></i></div>
@@ -714,13 +760,13 @@ function vProgress(){
     <section class="card">
       <div class="goal"><h2>Журнал</h2><span class="badge num">${inR.length}</span></div>
       <div class="bar"><i style="width:0"></i></div>
-      ${inR.length ? inR.slice().reverse().map(w=>{const c=cycleOn(w.date), p=perf(w,best); return `<div class="jitem"><div style="min-width:0"><div><b class="num" style="font-weight:500">${fmtY(w.date)}</b> · ${esc(w.day)}</div><div class="row small muted" style="gap:10px;margin-top:3px">${phaseTag(c)}${w.feel?.energy!=null?`<span>энергия ${w.feel.energy}/5</span>`:""}${p!=null?`<span>сила ${Math.round(p)}%</span>`:""}${(w.feel?.flags||[]).map(f=>`<span>${esc(f)}</span>`).join("")}</div>${w.feel?.note?`<div class="small" style="margin-top:3px">${esc(w.feel.note)}</div>`:""}</div>
+      ${inR.length ? inR.slice().reverse().map(w=>{const c=cycleOn(w.date), p=perf(w,best); return `<div class="jitem"><div style="min-width:0"><div><b class="num" style="font-weight:500">${fmtY(w.date)}</b> · ${esc(w.day)}</div><div class="row small muted" style="gap:10px;margin-top:3px">${phaseTag(c)}${w.feel?.energy!=null?`<span>энергия ${w.feel.energy}/5</span>`:""}${p!=null?`<span>сила ${Math.round(p)}%</span>`:""}${(w.feel?.flags||[]).map(f=>`<span>${esc(f)}</span>`).join("")}</div>${(w.cardio||[]).length?`<div class="small" style="margin-top:3px">Кардио: ${w.cardio.map(c=>`${cardioType(c.type)[2]} ${c.min} мин${pulseTxt(c)?` · ${pulseTxt(c)}`:""}`).join("; ")}</div>`:""}${w.feel?.note?`<div class="small" style="margin-top:3px">${esc(w.feel.note)}</div>`:""}</div>
         <div class="row" style="flex-wrap:nowrap;align-items:flex-start">${confirmDel===w.id?`<button class="ghost danger" data-act="del-w" data-id="${w.id}">Удалить</button><button class="ghost" data-act="del-no">Нет</button>`:`<button class="link" data-act="edit-w" data-id="${w.id}">Изменить</button><button class="link" data-act="del-ask" data-id="${w.id}" style="color:var(--muted)">×</button>`}</div></div>`}).join("") : `<p class="muted small" style="margin:0">За этот период тренировок нет.</p>`}
     </section>
     <section class="card stack">
       <div class="goal"><h2>Выгрузка в таблицу</h2><span class="badge">.xlsx</span></div>
-      <p class="muted small" style="margin:0">Все тренировки, упражнения, самочувствие, сводка по фазам, цикл и замеры — отдельными листами. Открывается в Excel и Google Таблицах.</p>
-      <div class="row"><button class="primary" data-act="export" style="width:auto;padding:12px 22px">Скачать Excel</button><button class="ghost" data-act="copy-csv">Скопировать как CSV</button></div>
+      <p class="muted small" style="margin:0">Все тренировки, упражнения, кардио, самочувствие, сводка по фазам, цикл и замеры — отдельными листами. Открывается в Excel и Google Таблицах.</p>
+      <div class="row"><button class="primary" data-act="export" style="width:auto;padding:12px 22px">Скачать Excel</button><button class="ghost" data-act="copy-csv" data-sheet="Упражнения">CSV: упражнения</button><button class="ghost" data-act="copy-csv" data-sheet="Кардио">CSV: кардио</button></div>
     </section>
   </div>`;
 }
@@ -811,11 +857,13 @@ function vPlan(){
 function exportRows(){
   const best = bestMap(), ws = sortedW();
   const fl = w => (w.feel?.flags||[]).join(", ");
-  const trainings = [["Дата","День","ДЦ","Фаза","Энергия","Настроение","Сон","Крепатура","Стресс","Отметки","Самочувствие","Тоннаж, кг","Сила, % от лучшего"]];
+  const trainings = [["Дата","День","ДЦ","Фаза","Энергия","Настроение","Сон","Крепатура","Стресс","Отметки","Самочувствие","Тоннаж, кг","Сила, % от лучшего","Кардио, мин"]];
+  const cardioRows = [["Дата","ДЦ","Фаза","Тренировка","Тип","Минуты","Пульс, уд/мин","Зона пульса","Заметка"]];
   const exRows = [["Дата","ДЦ","Фаза","День","Упражнение","Вес, кг","Повторы","RPE","Боль/техника","Расч. максимум","% от лучшего","Сигнал","Ощущения"]];
   for (const w of ws){
     const c = cycleOn(w.date), F = w.feel||{}, p = perf(w,best);
-    trainings.push([w.date, w.day, c?.dc??"", c?PH[c.phase].name:"", F.energy??"", F.mood??"", F.sleep??"", F.sore??"", F.stress??"", fl(w), F.note||"", Math.round(tonnage(w)), p!=null?Math.round(p):""]);
+    trainings.push([w.date, w.day, c?.dc??"", c?PH[c.phase].name:"", F.energy??"", F.mood??"", F.sleep??"", F.sore??"", F.stress??"", fl(w), F.note||"", Math.round(tonnage(w)), p!=null?Math.round(p):"", cardioMin(w)||""]);
+    for (const cr of (w.cardio||[])) cardioRows.push([w.date, c?.dc??"", c?PH[c.phase].name:"", w.day, cardioType(cr.type)[1], n(cr.min)??"", n(cr.hr)??"", ZONES.find(z=>z[0]===cr.zone)?.[1]||"", cr.note||""]);
     for (const e of (w.entries||[])){ const v = e1rm(e), b = best[histKey(e.ex)], s = signal(e,EX[e.ex]);
       exRows.push([w.date, c?.dc??"", c?PH[c.phase].name:"", w.day, EX[e.ex]?.name||e.ex, n(e.w)??"", (e.reps||[]).join("/"), e.rpe??"", ISSUE_TXT[issueOf(e)], v?+v.toFixed(1):"", v&&b?Math.round(v/b*100):"", s?SIG[s][1]:"", e.note||""]); }
   }
@@ -824,7 +872,7 @@ function exportRows(){
     phase.push([PH[k].name, sel.length, pv.length?Math.round(avg(pv)):"", f("energy"), f("mood"), f("sore")]); }
   const per = starts(); const cyc = [["Начало","Длина, дней"]]; per.forEach((d,i)=>cyc.push([d, per[i+1]?days(d,per[i+1]):""]));
   const mz = [["Дата","ДЦ","Талия","Бёдра","Бедро","Грудь"]]; for (const m of [...S.measures].sort((a,b)=>a.date.localeCompare(b.date))) mz.push([m.date, cycleOn(m.date)?.dc??"", m.waist??"", m.hips??"", m.thigh??"", m.chest??""]);
-  return {"Тренировки":trainings, "Упражнения":exRows, "По фазам":phase, "Цикл":cyc, "Замеры":mz};
+  return {"Тренировки":trainings, "Упражнения":exRows, "Кардио":cardioRows, "По фазам":phase, "Цикл":cyc, "Замеры":mz};
 }
 function loadXLSX(){ return new Promise((res,rej)=>{ if (window.XLSX) return res(window.XLSX); const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; s.onload = ()=>res(window.XLSX); s.onerror = rej; document.head.appendChild(s); }); }
 async function doExport(){
@@ -835,8 +883,8 @@ async function doExport(){
   const file = new File([buf], `Трекер-${todayISO()}.xlsx`, {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
   if (await shareOrDownload(file, "Трекер тренировок")) toast("Готово");
 }
-async function copyCSV(){
-  const r = exportRows()["Упражнения"]; const csv = r.map(row=>row.map(v=>{const s=String(v); return /[",;\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}).join(",")).join("\n");
+async function copyCSV(sheet){
+  const r = exportRows()[sheet || "Упражнения"]; const csv = r.map(row=>row.map(v=>{const s=String(v); return /[",;\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}).join(",")).join("\n");
   try{ await navigator.clipboard.writeText(csv); toast("Скопировано — вставь в Google Таблицу"); } catch(e){ toast("Копирование недоступно в этом окне"); }
 }
 
@@ -859,6 +907,16 @@ view.addEventListener("input", e => {
   const el = e.target;
   if (el.id === "feel-note"){ draft.feel.note = el.value; saveDraft(); return; }
   if (el.id === "feel-dc"){ clearTimeout(dcT); dcT = el.value === "" ? null : setTimeout(flushDC, 900); return; }
+  const cItem = el.closest("[data-ci]");
+  if (cItem && el.dataset.cf && draft){
+    const c = draft.cardio[+cItem.dataset.ci], f = el.dataset.cf;
+    if (f === "note") c.note = el.value;
+    else c[f] = el.value === "" ? "" : Math.max(0, Math.round(+el.value));
+    // a typed pulse replaces the zone
+    if (f === "hr" && el.value !== ""){ c.zone = ""; cItem.querySelectorAll('[data-act="c-zone"]').forEach(z=>z.setAttribute("aria-pressed","false")); }
+    if (f === "min"){ const t = draft.cardio.reduce((sum,x)=>sum+(n(x.min)||0),0); const bdg = document.querySelector("[data-ctotal]"); if (bdg) bdg.textContent = t ? t+" мин" : (draft.day==="cardio"?"мин":"необязательно"); }
+    saveDraft(); return;
+  }
   const card = el.closest("[data-i]"); if (!card || !draft) return;
   const en = draft.entries[+card.dataset.i], ex = EX[en.ex] || {max:99, sets:en.reps.length};
   if (el.dataset.f === "w") en.w = el.value === "" ? "" : +el.value;
@@ -874,9 +932,28 @@ view.addEventListener("change", async e => {
 });
 view.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.day){ if (b.dataset.day !== draft.day){ newDraft(b.dataset.day, draft.date); render(); } return; }
+  if (b.dataset.day){
+    if (b.dataset.day !== draft.day){
+      // switching the day keeps the date, wellbeing, cardio and the record being edited
+      const old = draft; newDraft(b.dataset.day, old.date);
+      draft.id = old.id; draft.feel = old.feel;
+      if (old.cardio && !cardioUntouched(old)) draft.cardio = old.cardio;
+      saveDraft(); render();
+    }
+    return;
+  }
   if (b.dataset.range){ range = b.dataset.range; anchor = todayISO(); ls.set(LKEY+":range", range); render(); return; }
   const act = b.dataset.act; if (!act) return;
+  const cItem = b.closest("[data-ci]");
+  if (cItem && draft){
+    const i = +cItem.dataset.ci, c = draft.cardio[i];
+    if (act === "c-type") c.type = b.dataset.v;
+    if (act === "c-min+" || act === "c-min-") c.min = Math.max(0, (n(c.min)||0) + (act==="c-min+" ? 5 : -5));
+    if (act === "c-zone"){ c.zone = c.zone === b.dataset.v ? "" : b.dataset.v; if (c.zone) c.hr = ""; }
+    if (act === "c-del") draft.cardio.splice(i, 1);
+    saveDraft(); render(); return;
+  }
+  if (act === "c-add"){ draft.cardio.push(newCardio()); saveDraft(); render(); document.getElementById("cardio")?.scrollIntoView({block:"center"}); return; }
   const card = b.closest("[data-i]");
   if (card){
     const en = draft.entries[+card.dataset.i], ex = EX[en.ex] || {step:2.5, max:99, sets:en.reps.length};
@@ -891,13 +968,21 @@ view.addEventListener("click", async e => {
   if (act === "save"){
     const D = draft;
     const entries = D.entries.filter(en => en.reps.some(r=>r!=="")).map(en => ({ex:en.ex, w:en.w===""?0:en.w, reps:en.reps.filter(r=>r!==""), rpe:en.rpe, pain:!!issueOf(en), issue:issueOf(en), note:en.note||""}));
-    if (!entries.length){ toast("Впиши повторы хотя бы в одном упражнении"); return; }
+    const cardio = (D.cardio||[]).filter(cr => n(cr.min) > 0).map(cr => ({type:cr.type, min:+cr.min, hr:n(cr.hr), zone:cr.zone||"", note:cr.note||""}));
+    if (D.day === "cardio" && !cardio.length){ toast("Впиши минуты кардио"); return; }
+    if (!entries.length && !cardio.length){ toast("Впиши повторы или минуты кардио"); return; }
     const P = PLAN().days, c = cycleOn(D.date);
-    const w = {id: D.id || newId("w"), date:D.date, dayKey: D.custom ? (S.workouts.find(x=>x.id===D.id)?.dayKey||"") : D.day, day: D.custom ? D.dayLabel : `${P[D.day].title} ${P[D.day].sub}`, feel:D.feel, entries, dc:c?.dc??null};
+    // no strength sets typed → it is a cardio-only record
+    const cardioOnly = D.day === "cardio" || !entries.length;
+    const w = {id: D.id || newId("w"), date:D.date,
+      dayKey: cardioOnly ? "cardio" : (D.custom ? (S.workouts.find(x=>x.id===D.id)?.dayKey||"") : D.day),
+      day: cardioOnly ? "Кардио" : (D.custom ? D.dayLabel : `${P[D.day].title} ${P[D.day].sub}`),
+      feel:D.feel, entries, cardio, dc:c?.dc??null};
     b.disabled = true;
     try{ await put("workouts", w); }catch(_){ b.disabled = false; return; }
-    const wasEdit = !!D.id; draft = null; newDraft(wasEdit ? nextDay() : ["D1","D2","D3"][(["D1","D2","D3"].indexOf(w.dayKey)+1)%3]);
-    toast(wasEdit ? "Изменения сохранены" : "Тренировка сохранена"); tab = "progress"; anchor = w.date; ls.set(LKEY+":tab", tab); render(); window.scrollTo(0,0); return;
+    const wasEdit = !!D.id; draft = null;
+    newDraft(wasEdit || cardioOnly || !["D1","D2","D3"].includes(w.dayKey) ? nextDay() : ["D1","D2","D3"][(["D1","D2","D3"].indexOf(w.dayKey)+1)%3]);
+    toast(wasEdit ? "Изменения сохранены" : (cardioOnly ? "Кардио сохранено" : "Тренировка сохранена")); tab = "progress"; anchor = w.date; ls.set(LKEY+":tab", tab); render(); window.scrollTo(0,0); return;
   }
   if (act === "cancel-edit"){ draft = null; newDraft(nextDay()); render(); return; }
   if (act === "edit-w"){ const w = S.workouts.find(x=>x.id===b.dataset.id); if (w){ editWorkout(w); tab = "train"; ls.set(LKEY+":tab", tab); render(); window.scrollTo(0,0); } return; }
@@ -919,7 +1004,7 @@ view.addEventListener("click", async e => {
     await put("measures", m); toast("Замер добавлен"); return;
   }
   if (act === "export"){ b.disabled = true; await doExport(); b.disabled = false; return; }
-  if (act === "copy-csv"){ copyCSV(); return; }
+  if (act === "copy-csv"){ copyCSV(b.dataset.sheet); return; }
   if (act === "backup"){ exportData(); return; }
   if (act === "sync-paste"){
     let t = ""; try{ t = (await navigator.clipboard.readText()).trim(); }catch(_){ }
