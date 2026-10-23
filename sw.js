@@ -1,5 +1,5 @@
 // Офлайн-режим: страница всегда берётся из сети (в обход временной копии браузера), а без интернета — из кэша.
-const CACHE = 'zal-v12';
+const CACHE = 'zal-v13';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
   'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'];
 self.addEventListener('install', e => {
@@ -12,6 +12,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
+  if (new URL(req.url).hostname === 'api.github.com') return; // база — всегда из сети, не кэшируем
   if (req.mode === 'navigate'){
     e.respondWith(fetch(req, { cache: 'no-store' }).then(r => { const c = r.clone(); caches.open(CACHE).then(ca => ca.put('./index.html', c)); return r; })
       .catch(() => caches.match('./index.html')));
